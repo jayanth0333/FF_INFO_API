@@ -1,3 +1,4 @@
+import os
 import asyncio
 import time
 import httpx
@@ -40,26 +41,8 @@ JWT_API_BASE = "https://najmiob55jwttokengen.vercel.app/token"   #JWT API BY JAH
 # ACCOUNTS FOR JWT
 # =============================================
 
-BD_CREDS = {
-    "uid": "8388138124", 
-    "password": "GoharBD-q7DY342FY1Ofw5Za"
-}
-
-IND_CREDS = {
-    "uid": "7949920781", 
-    "password": "9E6B0D1620CF285C79D9704F9CD6B11D424530386557F1CFB0A5390DE93A3016"
-}
-
-BR_CREDS = {
-    "uid": "8388139122",
-    "password": "GoharBR-TCjGleaFyFKtJym8"
-}
-
-ACCOUNT_CREDENTIALS = {
-    "BD": BD_CREDS,
-    "IND": IND_CREDS,
-    "BR": BR_CREDS
-}
+IND_CREDS = {"uid": os.getenv("IND_UID", ""), "password": os.getenv("IND_PASSWORD", "")}
+ACCOUNT_CREDENTIALS = {"IND": IND_CREDS}
 
 # =============================================
 # 🌍 রিজন কনফিগ
@@ -78,7 +61,7 @@ LOGIN_URLS = {
 }
 
 
-REGION_PRIORITY = ["BD", "IND", "BR"]
+REGION_PRIORITY = ["IND"]
 
 # === Flask App ===
 app = Flask(__name__)
@@ -96,7 +79,7 @@ _token_cache = {}
 
 async def get_jwt_token_from_api(region: str):
     cred = ACCOUNT_CREDENTIALS.get(region)
-    if not cred:
+    if not cred or not cred.get("uid") or not cred.get("password"):
         return None
 
     url = f"{JWT_API_BASE}?uid={cred['uid']}&password={cred['password']}"
@@ -118,8 +101,10 @@ async def get_jwt_token_from_api(region: str):
             if not token:
                 return None
 
-            api_region = data.get("region", region)
-            server_url = REGION_CONFIG.get(api_region, REGION_CONFIG["BD"])["server_url"]
+            api_region = str(data.get("region", "")).strip().upper()
+            if api_region != "IND":
+                return None
+            server_url = REGION_CONFIG["IND"]["server_url"]
 
             return {
                 "token": f"Bearer {token}",
@@ -136,8 +121,10 @@ async def get_jwt_token_from_api(region: str):
 # =============================================
 
 async def get_token(region: str):
+    if region != "IND":
+        return None
     cached = _token_cache.get(region)
-    if cached and cached.get('expires_at', 0) > time.time():
+    if cached and cached.get('region') == 'IND' and cached.get('expires_at', 0) > time.time():
         return cached
 
     token_info = await get_jwt_token_from_api(region)
@@ -145,7 +132,9 @@ async def get_token(region: str):
     if not token_info:
         token_info = await generate_token_backup(region)
 
-    if token_info:
+    if token_info and str(token_info.get("region", "")).strip().upper() == "IND":
+        token_info["region"] = "IND"
+        token_info["server_url"] = REGION_CONFIG["IND"]["server_url"]
         _token_cache[region] = token_info
         return token_info
 
@@ -153,7 +142,7 @@ async def get_token(region: str):
 
 async def generate_token_backup(region: str):
     try:
-        cred = ACCOUNT_CREDENTIALS.get(region, ACCOUNT_CREDENTIALS["BD"])
+        cred = ACCOUNT_CREDENTIALS["IND"]
         account = f"uid={cred['uid']}&password={cred['password']}"
 
         token_val, open_id = await get_access_token(account)
@@ -169,8 +158,8 @@ async def generate_token_backup(region: str):
         proto_bytes = await json_to_proto(body, FreeFire_pb2.LoginReq())
         payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, proto_bytes)
 
-        config = REGION_CONFIG.get(region, REGION_CONFIG["BD"])
-        login_url = LOGIN_URLS.get(region, LOGIN_URLS["BD"])
+        config = REGION_CONFIG["IND"]
+        login_url = LOGIN_URLS["IND"]
         url = f"{login_url}/MajorLogin"
 
         headers = {
@@ -239,10 +228,12 @@ async def GetAccountInformation(uid, region):
         if not token_info:
             return None
 
-        actual_region = token_info.get('region', region)
+        actual_region = token_info.get('region')
+        if region != 'IND' or actual_region != 'IND':
+            return None
         token = token_info['token']
-        server_url = token_info['server_url']
-        config = REGION_CONFIG.get(actual_region, REGION_CONFIG["BD"])
+        server_url = REGION_CONFIG['IND']['server_url']
+        config = REGION_CONFIG['IND']
 
         payload = await json_to_proto(json.dumps({'a': uid, 'b': '7'}), main_pb2.GetPlayerPersonalShow())
         data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
@@ -267,6 +258,9 @@ async def GetAccountInformation(uid, region):
             account_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
             account_info.ParseFromString(resp.content)
             result = json.loads(json_format.MessageToJson(account_info))
+
+            if str(result.get("basicInfo", {}).get("region", "")).upper() != "IND":
+                return None
 
             is_banned = result.get("isBanned", False)
             if isinstance(is_banned, bool):
